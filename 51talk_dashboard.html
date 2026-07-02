@@ -652,18 +652,19 @@ function loadR() {
 
           all = all.filter(r => {
             const sid = String(r.student_id || '');
-            const ss  = (r.crm_ss_agent || '').toLowerCase();
-            const lp  = (r.crm_lp_agent || '').toLowerCase();
+            const ss  = (r.crm_ss_agent || '').toLowerCase().trim();
+            const lp  = (r.crm_lp_agent || '').toLowerCase().trim();
 
-            // Match by crm_ss_agent OR crm_lp_agent (strict exact match)
-            if (ss === agentName || ss === agentDisplay) return true;
-            if (lp === agentName || lp === agentDisplay) return true;
+            // Priority 1: exact match on crm fields (most reliable)
+            if (ss && (ss === agentName || ss === agentDisplay)) return true;
+            if (lp && (lp === agentName || lp === agentDisplay)) return true;
 
-            // Match by student ID from AGENTS list (Excel upload)
-            if (allowed.size > 0 && allowed.has(sid)) return true;
-
-            // Match by student ID from manual leads
-            if (manualLeads.has(sid)) return true;
+            // Priority 2: student ID in agent's Excel list
+            // Only use if crm fields are empty (test taken before CRM loaded)
+            if (!ss && !lp) {
+              if (allowed.size > 0 && allowed.has(sid)) return true;
+              if (manualLeads.has(sid)) return true;
+            }
 
             return false;
           });
