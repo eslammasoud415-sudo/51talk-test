@@ -477,6 +477,13 @@ function doLogin() {
     eEl.style.display='block'; uEl.classList.add('err'); pEl.classList.add('err');
     pEl.value=''; pEl.focus(); return;
   }
+  // Check suspension
+  const loginUser = (uEl.value||'').trim().toLowerCase();
+  if(isAgentSuspended(loginUser)){
+    eEl.textContent='Your account has been suspended. Please contact admin.';
+    eEl.style.display='block'; uEl.classList.add('err');
+    return;
+  }
   CU = acc;
   try { sessionStorage.setItem('51t_sess', JSON.stringify({...acc, studentIds:null, _uk:acc.username})); } catch(e){}
   applySession();
@@ -554,7 +561,7 @@ function V(name) {
   const titles={results:'Test Results',analytics:'Analytics & Insights',students:'Students CRM',compare:'Level Comparison',settings:'Settings & Passwords',addlead:'Add Student Manually'};
   document.getElementById('tb-ti').textContent=titles[name]||name;
   if(name==='analytics') renderA();
-  if(name==='settings') loadSettingsView();
+  if(name==='settings'){loadSettingsView();if(CU&&CU.role==='super_admin')loadSuspended().then(renderSuspendedList);}
   if(name==='addlead') {
     renderManualLeads();
     // Lock SS/LP fields and pre-fill for non-admin agents
@@ -652,19 +659,18 @@ function loadR() {
 
           all = all.filter(r => {
             const sid = String(r.student_id || '');
-            const ss  = (r.crm_ss_agent || '').toLowerCase().trim();
-            const lp  = (r.crm_lp_agent || '').toLowerCase().trim();
+            const ss  = (r.crm_ss_agent || '').toLowerCase();
+            const lp  = (r.crm_lp_agent || '').toLowerCase();
 
-            // Priority 1: exact match on crm fields (most reliable)
-            if (ss && (ss === agentName || ss === agentDisplay)) return true;
-            if (lp && (lp === agentName || lp === agentDisplay)) return true;
+            // Match by crm_ss_agent OR crm_lp_agent (strict exact match)
+            if (ss === agentName || ss === agentDisplay) return true;
+            if (lp === agentName || lp === agentDisplay) return true;
 
-            // Priority 2: student ID in agent's Excel list
-            // Only use if crm fields are empty (test taken before CRM loaded)
-            if (!ss && !lp) {
-              if (allowed.size > 0 && allowed.has(sid)) return true;
-              if (manualLeads.has(sid)) return true;
-            }
+            // Match by student ID from AGENTS list (Excel upload)
+            if (allowed.size > 0 && allowed.has(sid)) return true;
+
+            // Match by student ID from manual leads
+            if (manualLeads.has(sid)) return true;
 
             return false;
           });
@@ -1249,7 +1255,30 @@ function loadSettingsView(){
   if(!el)return;
   if(CU.role==='super_admin'){
     const saved=getSavedAdmins(),ap=localStorage.getItem(DASH_LS_KEY+'_agent_pass')||'1234',gp=localStorage.getItem(DASH_LS_KEY+'_grp_default')||'team1234',allAdmins={...ADMINS,...saved};
-    el.innerHTML=`<div class="tc" style="margin-bottom:16px"><div class="tto"><div class="tt">📂 Upload Leads (CRM Update)</div></div><div style="padding:18px 20px">
+    el.innerHTML=`<div class="tc" style="margin-bottom:16px">
+      <div class="tto"><div class="tt">🚫 Suspend Users</div></div>
+      <div style="padding:14px 18px">
+        <div style="font-size:.8rem;color:#6b7280;margin-bottom:12px">Suspend by individual, role (SS/LP), or group. Suspended agents can't login. Suspended students can't take the test.</div>
+        <div style="display:grid;grid-template-columns:auto auto 1fr auto;gap:8px;align-items:center;margin-bottom:8px">
+          <select id="sus-type" class="si2" onchange="onSuspendTypeChange()" style="width:110px">
+            <option value="individual">Individual</option>
+            <option value="role">Role</option>
+            <option value="group">Group</option>
+          </select>
+          <select id="sus-scope" class="si2" onchange="onSuspendTypeChange()" style="width:100px">
+            <option value="agent">Agent</option>
+            <option value="student">Student</option>
+          </select>
+          <div style="display:flex;gap:6px;align-items:center">
+            <span id="sus-value-label" style="font-size:.78rem;font-weight:700;color:var(--mu);white-space:nowrap">Agent username:</span>
+            <input id="sus-value" class="si2" placeholder="e.g. EGLP-ssabry" style="flex:1"/>
+            <input id="sus-reason" class="si2" placeholder="Reason (optional)" style="width:160px"/>
+          </div>
+          <button class="btn bp" onclick="addSuspension()" style="white-space:nowrap">🚫 Add Rule</button>
+        </div>
+        <div id="sus-list" style="margin-top:8px;font-size:.82rem">Loading...</div>
+      </div></div>
+    <div class="tc" style="margin-bottom:16px"><div class="tto"><div class="tt">📂 Upload Leads (CRM Update)</div></div><div style="padding:18px 20px">
       <div style="font-size:.82rem;color:#374151;margin-bottom:12px">Upload the monthly <strong>All Leads Excel file</strong> to update the Students CRM data instantly.</div>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <input type="file" id="leads-upload" accept=".xlsx" style="font-size:.82rem;color:#374151;cursor:pointer"/>
@@ -2995,6 +3024,130 @@ function summaryKpi(label, metrics, valFn, tgtFn){
     '<div style="font-size:.7rem;color:#bfdbfe">'+label+'</div>' +
     '<div style="font-size:.68rem;color:#93c5fd">target: '+tgt+'%</div>' +
   '</div>';
+}
+
+// ══ SUSPEND SYSTEM ══
+var SUSPENDED_RULES = [];
+
+function loadSuspended(){
+  return fetch(SCRIPT_URL+'?secret=51talk_secret_2024&action=fetch_suspended&t='+Date.now())
+  .then(function(r){return r.json();}).then(function(d){
+    if(d.status==='ok') SUSPENDED_RULES = d.suspended||[];
+  }).catch(function(){});
+}
+
+// Check if an agent is suspended by any rule
+function isAgentSuspended(username){
+  if(!SUSPENDED_RULES.length) return false;
+  var u = (username||'').toLowerCase();
+  // Find agent entry
+  var agent = AGENTS[u] || {};
+  var group = (agent.g||'').toLowerCase();
+  var role  = (agent.r||'ss').toLowerCase();
+
+  return SUSPENDED_RULES.some(function(rule){
+    if(rule.type==='individual' && rule.scope==='agent')
+      return rule.value.toLowerCase() === u;
+    if(rule.type==='role')
+      return rule.value.toLowerCase() === role;
+    if(rule.type==='group')
+      return group.toLowerCase().includes(rule.value.toLowerCase());
+    return false;
+  });
+}
+
+// Check if a student is suspended
+function isStudentSuspended(studentId){
+  if(!SUSPENDED_RULES.length) return false;
+  return SUSPENDED_RULES.some(function(rule){
+    return rule.type==='individual' && rule.scope==='student'
+      && String(rule.value) === String(studentId);
+  });
+}
+
+function suspendRule(type, scope, value, reason){
+  var payload = {
+    secret:'51talk_secret_2024', action:'suspend_user',
+    type:type, scope:scope||'', value:value, reason:reason||''
+  };
+  return fetch(SCRIPT_URL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:Object.keys(payload).map(function(k){return encodeURIComponent(k)+'='+encodeURIComponent(payload[k]);}).join('&')})
+  .then(function(r){return r.json();});
+}
+
+function unsuspendRule(id){
+  var payload = {secret:'51talk_secret_2024', action:'unsuspend_user', rule_id:String(id)};
+  return fetch(SCRIPT_URL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:Object.keys(payload).map(function(k){return encodeURIComponent(k)+'='+encodeURIComponent(payload[k]);}).join('&')})
+  .then(function(r){return r.json();});
+}
+
+function addSuspension(){
+  var type   = document.getElementById('sus-type').value;
+  var scope  = document.getElementById('sus-scope') ? document.getElementById('sus-scope').value : '';
+  var value  = (document.getElementById('sus-value').value||'').trim();
+  var reason = (document.getElementById('sus-reason').value||'').trim();
+  if(!value){alert('Please fill in the value field.');return;}
+  suspendRule(type, scope, value, reason).then(function(d){
+    showToast(d.status==='ok' ? '🚫 Rule added!' : '❌ '+d.message);
+    loadSuspended().then(function(){ renderSuspendedList(); });
+    document.getElementById('sus-value').value='';
+    document.getElementById('sus-reason').value='';
+  });
+}
+
+function removeSuspension(id){
+  if(!confirm('Remove this suspension rule?')) return;
+  unsuspendRule(id).then(function(d){
+    showToast(d.status==='ok' ? '✅ Rule removed!' : '❌ '+d.message);
+    SUSPENDED_RULES = SUSPENDED_RULES.filter(function(r){ return r.id != id; });
+    renderSuspendedList();
+  });
+}
+
+function onSuspendTypeChange(){
+  var type  = document.getElementById('sus-type').value;
+  var scope = document.getElementById('sus-scope');
+  var label = document.getElementById('sus-value-label');
+  var input = document.getElementById('sus-value');
+  if(type==='individual'){
+    scope.style.display='';
+    label.textContent = scope.value==='agent' ? 'Agent username:' : 'Student ID:';
+    input.placeholder = scope.value==='agent' ? 'e.g. EGLP-ssabry' : 'e.g. 63510157';
+  } else if(type==='role'){
+    scope.style.display='none';
+    label.textContent='Role:';
+    input.placeholder='ss  or  lp';
+  } else if(type==='group'){
+    scope.style.display='none';
+    label.textContent='Group name (partial):';
+    input.placeholder='e.g. GCC05 or ME-EGSS';
+  }
+}
+
+function renderSuspendedList(){
+  var el = document.getElementById('sus-list');
+  if(!el) return;
+  if(!SUSPENDED_RULES.length){
+    el.innerHTML='<div style="color:var(--mu);font-style:italic;padding:8px 0">No suspension rules.</div>';
+    return;
+  }
+  var typeColors = {
+    individual:'#fef2f2:#dc2626',
+    role:'#fff7ed:#c2410c',
+    group:'#f0f7ff:#1e40af'
+  };
+  el.innerHTML = SUSPENDED_RULES.map(function(r){
+    var clrs = (typeColors[r.type]||'#f9fafb:#374151').split(':');
+    var label = r.type==='individual' ? (r.scope==='agent'?'AGENT':'STUDENT')
+              : r.type==='role' ? 'ROLE' : 'GROUP';
+    return '<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #f0f2f5;flex-wrap:wrap">'
+      +'<span style="background:'+clrs[0]+';color:'+clrs[1]+';border-radius:4px;padding:2px 7px;font-size:.7rem;font-weight:800">'+label+'</span>'
+      +'<span style="font-weight:700;color:#374151;font-size:.85rem">'+h(r.value)+'</span>'
+      +(r.reason?'<span style="color:var(--mu);font-size:.78rem">— '+h(r.reason)+'</span>':'')
+      +'<button onclick="removeSuspension('+r.id+')" style="margin-left:auto;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;border-radius:6px;padding:3px 10px;font-size:.78rem;cursor:pointer;font-family:inherit">✕ Remove</button>'
+      +'</div>';
+  }).join('');
 }
 </script>
 </body>
