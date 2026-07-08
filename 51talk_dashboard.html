@@ -561,7 +561,7 @@ function V(name) {
   const titles={results:'Test Results',analytics:'Analytics & Insights',students:'Students CRM',compare:'Level Comparison',settings:'Settings & Passwords',addlead:'Add Student Manually'};
   document.getElementById('tb-ti').textContent=titles[name]||name;
   if(name==='analytics') renderA();
-  if(name==='settings'){loadSettingsView();if(CU&&CU.role==='super_admin')loadSuspended().then(renderSuspendedList);}
+  if(name==='settings'){loadSettingsView();if(CU&&CU.role==='super_admin'){loadSuspended().then(renderSuspendedList);loadTestStatus();}}
   if(name==='addlead') {
     renderManualLeads();
     // Lock SS/LP fields and pre-fill for non-admin agents
@@ -1256,6 +1256,18 @@ function loadSettingsView(){
   if(CU.role==='super_admin'){
     const saved=getSavedAdmins(),ap=localStorage.getItem(DASH_LS_KEY+'_agent_pass')||'1234',gp=localStorage.getItem(DASH_LS_KEY+'_grp_default')||'team1234',allAdmins={...ADMINS,...saved};
     el.innerHTML=`<div class="tc" style="margin-bottom:16px">
+      <div class="tto"><div class="tt">🔒 Test Access Control</div></div>
+      <div style="padding:14px 18px">
+        <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:12px">
+          <div id="test-status-badge" style="font-size:.85rem;font-weight:800">Loading...</div>
+          <button id="test-toggle-btn" class="btn bp" onclick="toggleTestStatus()" style="min-width:140px">Loading...</button>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input id="test-close-reason" class="si2" placeholder="Reason for closing (optional)" style="width:300px"/>
+        </div>
+        <div style="font-size:.78rem;color:#6b7280;margin-top:8px">When test is <strong>closed</strong>, no student can start the test. They will see a message explaining why.</div>
+      </div></div>
+    <div class="tc" style="margin-bottom:16px">
       <div class="tto"><div class="tt">🚫 Suspend Users</div></div>
       <div style="padding:14px 18px">
         <div style="font-size:.8rem;color:#6b7280;margin-bottom:12px">Suspend by individual, role (SS/LP), or group. Suspended agents can't login. Suspended students can't take the test.</div>
@@ -3148,6 +3160,57 @@ function renderSuspendedList(){
       +'<button onclick="removeSuspension('+r.id+')" style="margin-left:auto;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;border-radius:6px;padding:3px 10px;font-size:.78rem;cursor:pointer;font-family:inherit">✕ Remove</button>'
       +'</div>';
   }).join('');
+}
+
+// ══ TEST ACCESS CONTROL ══
+var _testStatus = 'open';
+
+function loadTestStatus(){
+  fetch(SCRIPT_URL+'?secret=51talk_secret_2024&action=get_test_status&t='+Date.now())
+  .then(function(r){return r.json();}).then(function(d){
+    _testStatus = d.test_status||'open';
+    renderTestStatusBadge();
+  }).catch(function(){});
+}
+
+function renderTestStatusBadge(){
+  var badge = document.getElementById('test-status-badge');
+  var btn   = document.getElementById('test-toggle-btn');
+  if(!badge||!btn) return;
+  if(_testStatus==='open'){
+    badge.innerHTML='<span style="background:#f0fdf4;color:#16a34a;padding:4px 14px;border-radius:99px;font-size:.85rem;font-weight:800">🟢 Test is OPEN</span>';
+    btn.textContent='🔒 Close Test for Everyone';
+    btn.style.background='#dc2626';
+    btn.style.color='#fff';
+  } else {
+    badge.innerHTML='<span style="background:#fef2f2;color:#dc2626;padding:4px 14px;border-radius:99px;font-size:.85rem;font-weight:800">🔴 Test is CLOSED</span>';
+    btn.textContent='🟢 Open Test for Everyone';
+    btn.style.background='#16a34a';
+    btn.style.color='#fff';
+  }
+}
+
+function toggleTestStatus(){
+  var newStatus = _testStatus==='open' ? 'closed' : 'open';
+  var reason = '';
+  if(newStatus==='closed'){
+    reason = (document.getElementById('test-close-reason').value||'').trim();
+    if(!confirm('Close the test for ALL students?')) return;
+  } else {
+    if(!confirm('Open the test for all students?')) return;
+  }
+  var payload = {secret:'51talk_secret_2024',action:'set_test_status',status:newStatus,reason:reason};
+  fetch(SCRIPT_URL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:Object.keys(payload).map(function(k){return encodeURIComponent(k)+'='+encodeURIComponent(payload[k]);}).join('&')})
+  .then(function(r){return r.json();}).then(function(d){
+    if(d.status==='ok'){
+      _testStatus = newStatus;
+      renderTestStatusBadge();
+      showToast(newStatus==='open' ? '🟢 Test opened for all students!' : '🔴 Test closed for all students!');
+    } else {
+      alert('Error: '+(d.message||'Unknown error'));
+    }
+  }).catch(function(e){ alert('Error: '+e.message); });
 }
 </script>
 </body>

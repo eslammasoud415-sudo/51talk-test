@@ -782,6 +782,21 @@ function previewStudentId(val){
   }
 }
 function startTest(){
+  // Check if test is globally closed
+  fetch('https://script.google.com/macros/s/AKfycbzaBWUy1fW7iOlkFYGRgCrPJQFMsJCFOY5mpwHtkePKjQH-7EWDfPmsPkzKxeDv5OE4Ug/exec?secret=51talk_secret_2024&action=get_test_status&t='+Date.now())
+  .then(function(r){return r.json();})
+  .then(function(d){
+    if(d.test_status==='closed'){
+      var msg = d.reason ? 'The test is currently closed.\n\nReason: '+d.reason : 'The test is currently closed. Please contact your agent.';
+      alert(msg);
+      return;
+    }
+    _runStartTest();
+  })
+  .catch(function(){ _runStartTest(); });
+}
+
+function _runStartTest(){
   window._resultShown = false;  // reset submission guard
   const nameEl=document.getElementById('student-name');
   const idEl=document.getElementById('student-id');
